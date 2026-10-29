@@ -159,7 +159,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSSharingServiceDele
 
     private func setUpMenu() {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
-        statusItem.button?.image = NSImage(systemSymbolName: "circle.hexagongrid.fill", accessibilityDescription: "FileWheel")
+        statusItem.button?.image = Icons.menuBar()
         let menu = NSMenu()
         menu.addItem(withTitle: "Hold ⌘ and drag a Desktop file", action: nil, keyEquivalent: "")
         menu.addItem(.separator())
