@@ -36,6 +36,33 @@ MainActor.assumeIsolated {
         }
         exit(0)
     }
+    // Developer helper: `FILEWHEEL_DEBUG=1 FileWheel --demo-open` opens wheels by itself (a cold one, then
+    // warmed ones) and logs how quickly each starts its sweep, then quits.
+    if args.contains("--demo-open") {
+        let app = NSApplication.shared
+        app.setActivationPolicy(.accessory)
+        let screen = NSScreen.main!
+        let spot = CGRect(x: screen.frame.midX - 300, y: screen.frame.midY - 45, width: 80, height: 90)
+        let cold = WheelPanel()
+        let warm = WheelPanel()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.4) { warm.warmUp() }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+            Log.write("cold (no warm-up):")
+            cold.show(fileName: "demo.png", targets: ConversionRules.targets(for: .png), beside: spot, on: screen)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { cold.hide() }
+        }
+        var later: [WheelPanel] = []
+        for (n, delay) in [2.0, 3.5].enumerated() {
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
+                let w = WheelPanel(); later.append(w)
+                Log.write("new wheel #\(n + 1) after warm-up:")
+                w.show(fileName: "demo.png", targets: ConversionRules.targets(for: .pdf), beside: spot, on: screen)
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { w.hide() }
+            }
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 5) { exit(0) }
+        app.run()
+    }
     let app = NSApplication.shared
     let controller = AppController()
     app.delegate = controller

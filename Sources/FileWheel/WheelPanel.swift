@@ -25,6 +25,31 @@ final class WheelDropView: NSView {
     }
 }
 
+/// Runs `action` once the screen has actually drawn `frames` more frames, so an animation
+/// starts when the window is really visible instead of while it is still being set up.
+final class AfterFrames: NSObject {
+    private var link: CADisplayLink?
+    private var left: Int
+    private let action: () -> Void
+
+    init(_ view: NSView, frames: Int = 2, _ action: @escaping () -> Void) {
+        left = frames
+        self.action = action
+        super.init()
+        link = view.displayLink(target: self, selector: #selector(tick(_:)))
+        link?.add(to: .main, forMode: .common)
+    }
+
+    @objc private func tick(_ l: CADisplayLink) {
+        left -= 1
+        guard left <= 0 else { return }
+        l.invalidate(); link = nil
+        action()
+    }
+
+    func cancel() { link?.invalidate(); link = nil }
+}
+
 @MainActor
 final class WheelPanel {
     let model = WheelModel()
@@ -33,6 +58,7 @@ final class WheelPanel {
     var onDrop: ((CGPoint) -> Void)? { didSet { dropView.onDrop = onDrop } }
     private(set) var token = 0      // goes up each time the wheel opens, so old work can tell it's stale
     private(set) var centerOnScreen = CGPoint.zero
+    private var opening: AfterFrames?
 
     init() {
         let size = WheelGeometry.diameter + 40
@@ -53,6 +79,7 @@ final class WheelPanel {
     }
 
     func show(fileName: String, targets: [FileFormat], beside file: CGRect, on screen: NSScreen) {
+        let began = Date()
         token += 1
         model.fileName = fileName
         model.targets = targets
@@ -62,11 +89,21 @@ final class WheelPanel {
         let size = panel.frame.size
         panel.setFrameOrigin(CGPoint(x: centerOnScreen.x - size.width / 2, y: centerOnScreen.y - size.height / 2))
         panel.ignoresMouseEvents = false      // so the wheel, not the app below, receives the drop
-        panel.orderFrontRegardless()
-        // Start folded (no animation), then sweep open clockwise on the next beat.
+        panel.alphaValue = 1
+        // Start folded (no animation) and get that drawn before the window appears...
         var t = Transaction(); t.disablesAnimations = true
         withTransaction(t) { model.sweep = false; model.visible = true }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.03) { self.model.sweep = true }
+        panel.contentView?.layoutSubtreeIfNeeded()
+        panel.displayIfNeeded()
+        panel.orderFrontRegardless()
+        Log.write("wheel ready to appear in \(Int(Date().timeIntervalSince(began) * 1000)) ms")
+        // ...then sweep open only once the screen has really shown it, so no part of the sweep is skipped.
+        opening?.cancel()
+        let asked = Date()
+        opening = AfterFrames(panel.contentView!) { [weak self] in
+            self?.model.sweep = true
+            Log.write("wheel on screen, sweep started \(Int(Date().timeIntervalSince(asked) * 1000)) ms after opening")
+        }
     }
 
     /// Mouse position (screen coordinates, y up) turned into a position on the wheel.
@@ -85,7 +122,28 @@ final class WheelPanel {
     /// After a drop, let clicks go through to whatever is underneath, even while a conversion finishes.
     func releaseMouse() { panel.ignoresMouseEvents = true }
 
+    /// Draws the wheel once, invisibly, so macOS has the glass effect ready before it's needed for real.
+    /// Without this the very first wheel stutters and appears part-way through its sweep.
+    func warmUp() {
+        guard let screen = NSScreen.main else { return }
+        model.targets = [.png, .jpeg, .heic, .pdf]
+        var t = Transaction(); t.disablesAnimations = true
+        withTransaction(t) { model.sweep = true; model.visible = true }
+        panel.alphaValue = 0.01
+        panel.setFrameOrigin(screen.frame.origin)
+        panel.orderFrontRegardless()
+        panel.display()
+        // The display link holds on to this until it fires, so it needn't be stored.
+        _ = AfterFrames(panel.contentView!, frames: 6) { [weak self] in
+            guard let self else { return }
+            self.panel.orderOut(nil)
+            self.panel.alphaValue = 1
+            withTransaction(t) { self.model.sweep = false; self.model.visible = false }
+        }
+    }
+
     func hide(after delay: TimeInterval = 0) {
+        opening?.cancel()
         panel.ignoresMouseEvents = true
         let mine = token
         DispatchQueue.main.asyncAfter(deadline: .now() + delay) {

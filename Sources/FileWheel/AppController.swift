@@ -8,6 +8,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSSharingServiceDele
     private var airDropOrigin = CGRect.zero
     private var wheel: WheelPanel?          // the wheel you are dragging over right now
     private var busy: [WheelPanel] = []     // dropped-on wheels, now just a progress bubble while their file converts
+    private var spare: WheelPanel?          // built ahead of time, so a ⌘-drag never waits for one to be made
     private var monitors: [Any] = []
     private var armed = false
     private var dragStart = CGPoint.zero
@@ -17,8 +18,12 @@ final class AppController: NSObject, NSApplicationDelegate, NSSharingServiceDele
     func applicationDidFinishLaunching(_ notification: Notification) {
         setUpMenu()
         Log.write("launched")
+        _ = SoundFX.shared                  // load the tick sounds now, not on the first hover
+        let first = WheelPanel()
+        first.warmUp()
+        spare = first
         // A drag that holds still gives no mouse events, so also look for ⌘ being pressed a few times a second.
-        Timer.scheduledTimer(withTimeInterval: 0.04, repeats: true) { [weak self] _ in
+        Timer.scheduledTimer(withTimeInterval: 1.0 / 60, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated {
                 self?.updateWheel()
             }
@@ -75,8 +80,13 @@ final class AppController: NSObject, NSApplicationDelegate, NSSharingServiceDele
               let screen = NSScreen.screens.first(where: { $0.frame.contains(dragStart) }) ?? NSScreen.main
         else { return }
         active = c
-        // A fresh wheel every time, so earlier ones can keep showing their conversion's progress.
-        let w = WheelPanel()
+        // A wheel of its own every time, so earlier ones can keep showing their conversion's progress.
+        // Take the ready-made spare, and build the next spare once this wheel has finished opening.
+        let w = spare ?? WheelPanel()
+        spare = nil
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [weak self] in
+            if self?.spare == nil { self?.spare = WheelPanel() }
+        }
         w.onDrop = { [weak self, weak w] p in
             guard let self, let w else { return }
             self.dropped(on: w, at: p)
