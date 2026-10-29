@@ -38,6 +38,33 @@ public enum Converter {
         return url
     }
 
+    /// Names picked by conversions that haven't saved their file yet. Two conversions running at once
+    /// (say the same video, twice) would otherwise both pick "clip.mp4", and the second would fail to save.
+    private static let claimLock = NSLock()
+    nonisolated(unsafe) private static var claimed: Set<String> = []
+
+    private static func claimURL(base: String, ext: String, in folder: URL) -> URL {
+        claimLock.lock(); defer { claimLock.unlock() }
+        let url = uniqueURL(base: base, ext: ext, in: folder) {
+            claimed.contains($0.path) || FileManager.default.fileExists(atPath: $0.path)
+        }
+        claimed.insert(url.path)
+        return url
+    }
+
+    private static func release(_ url: URL) {
+        claimLock.lock(); defer { claimLock.unlock() }
+        claimed.remove(url.path)
+    }
+
+    /// Runs one save into a freshly claimed name. If it fails, any half-written file is cleared away
+    /// so a broken copy is never left on the Desktop.
+    private static func saving(_ out: URL, _ work: () async throws -> Void) async throws {
+        defer { release(out) }
+        do { try await work() }
+        catch { try? FileManager.default.removeItem(at: out); throw error }
+    }
+
     /// How far a conversion has got, from 0 to 1. Only slow kinds (video, audio, multi-page PDF) report it.
     public typealias Progress = @Sendable (Double) -> Void
 
@@ -66,18 +93,22 @@ public enum Converter {
             throw ConversionError.unsupported
         }
         let base = source.deletingPathExtension().lastPathComponent
-        let out = uniqueURL(base: base, ext: target.ext, in: folder)
-        switch (from.family, target.family) {
-        case (.image, .image): try imageToImage(source, out, target)
-        case (.image, .pdf): try imageToPDF(source, out)
-        case (.pdf, .text): try pdfToText(source, out)
-        case (.pdf, .image): return try pdfToImages(source, base: base, folder: folder, target, progress)
-        case (.video, .video):
-            try await export(source, out, preset: AVAssetExportPresetHighestQuality, type: avType(target), progress)
-        case (.video, .audio), (.audio, .audio) where target == .m4a:
-            try await export(source, out, preset: AVAssetExportPresetAppleM4A, type: .m4a, progress)
-        case (.audio, .audio): try audioToPCM(source, out, target, progress)
-        default: throw ConversionError.unsupported
+        if from.family == .pdf, target.family == .image {
+            return try await pdfToImages(source, base: base, folder: folder, target, progress)
+        }
+        let out = claimURL(base: base, ext: target.ext, in: folder)
+        try await saving(out) {
+            switch (from.family, target.family) {
+            case (.image, .image): try imageToImage(source, out, target)
+            case (.image, .pdf): try imageToPDF(source, out)
+            case (.pdf, .text): try pdfToText(source, out)
+            case (.video, .video):
+                try await export(source, out, preset: AVAssetExportPresetHighestQuality, type: avType(target), progress)
+            case (.video, .audio), (.audio, .audio) where target == .m4a:
+                try await export(source, out, preset: AVAssetExportPresetAppleM4A, type: .m4a, progress)
+            case (.audio, .audio): try audioToPCM(source, out, target, progress)
+            default: throw ConversionError.unsupported
+            }
         }
         return [out]
     }
@@ -122,17 +153,19 @@ public enum Converter {
 
     /// One image per page: "doc.png" for a single page, "doc page 1.png", "doc page 2.png"... for more.
     private static func pdfToImages(_ s: URL, base: String, folder: URL, _ t: FileFormat,
-                                    _ progress: Progress?) throws -> [URL] {
+                                    _ progress: Progress?) async throws -> [URL] {
         guard let doc = PDFDocument(url: s), doc.pageCount > 0 else { throw ConversionError.unreadable }
         var outs: [URL] = []
         for i in 0..<doc.pageCount {
             guard let page = doc.page(at: i) else { continue }
             let name = doc.pageCount == 1 ? base : "\(base) page \(i + 1)"
-            let out = uniqueURL(base: name, ext: t.ext, in: folder)
-            let box = page.bounds(for: .mediaBox), scale: CGFloat = 2
-            let thumb = page.thumbnail(of: CGSize(width: box.width * scale, height: box.height * scale), for: .mediaBox)
-            guard let cg = thumb.cgImage(forProposedRect: nil, context: nil, hints: nil) else { throw ConversionError.unreadable }
-            try write(cg, to: out, as: t)
+            let out = claimURL(base: name, ext: t.ext, in: folder)
+            try await saving(out) {
+                let box = page.bounds(for: .mediaBox), scale: CGFloat = 2
+                let thumb = page.thumbnail(of: CGSize(width: box.width * scale, height: box.height * scale), for: .mediaBox)
+                guard let cg = thumb.cgImage(forProposedRect: nil, context: nil, hints: nil) else { throw ConversionError.unreadable }
+                try write(cg, to: out, as: t)
+            }
             outs.append(out)
             progress?(Double(i + 1) / Double(doc.pageCount))
         }

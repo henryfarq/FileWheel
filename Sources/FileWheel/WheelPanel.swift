@@ -15,7 +15,11 @@ final class WheelDropView: NSView {
     }
     override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation { draggingUpdated(sender) }
     override func draggingUpdated(_ sender: NSDraggingInfo) -> NSDragOperation {
-        (accepts?(screenPoint(sender)) ?? false) ? .copy : []
+        guard accepts?(screenPoint(sender)) ?? false else { return [] }
+        // Holding ⌘ tells Finder "move", and it then refuses a drop that answers "copy": the file just snaps back.
+        // So answer with something Finder allows. FileWheel only ever reads the file, whatever the answer.
+        let allowed = sender.draggingSourceOperationMask
+        return [.copy, .generic, .link, .move].first { allowed.contains($0) } ?? .copy
     }
     override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
         let p = screenPoint(sender)
@@ -107,9 +111,10 @@ final class WheelPanel {
     }
 
     /// Mouse position (screen coordinates, y up) turned into a position on the wheel.
+    /// A little past the glass edge still counts, so a drop right on the rim isn't lost to the Desktop.
     func hit(at mouse: CGPoint) -> WheelHit {
         WheelGeometry.hit(CGPoint(x: mouse.x - centerOnScreen.x, y: centerOnScreen.y - mouse.y),
-                          sliceCount: model.targets.count)
+                          sliceCount: model.targets.count, outerRadius: WheelGeometry.diameter / 2 + 16)
     }
 
     func hover(at mouse: CGPoint) {

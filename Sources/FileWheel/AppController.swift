@@ -40,30 +40,50 @@ final class AppController: NSObject, NSApplicationDelegate, NSSharingServiceDele
     private func handle(type: NSEvent.EventType, command: Bool, at mouse: CGPoint) {
         switch type {
         case .leftMouseDown:
+            // A wheel left over from the last drag must not linger (or catch clicks) while a new one starts.
+            wheel?.hide(); wheel = nil
             active = nil
             armed = true                       // "armed" = the mouse button is down; ⌘ is checked as you go
+            letGoOfCommand = nil
             dragStart = mouse
             dragBaseline = NSPasteboard(name: .drag).changeCount
         case .leftMouseDragged:
             updateWheel()
         case .leftMouseUp:
-            armed = false
-            // If the wheel caught the drop it already acted; otherwise the drag ended off the wheel.
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [weak self] in
-                guard let self, self.active != nil, !self.armed else { return }
-                self.wheel?.hide(); self.wheel = nil; self.active = nil
-            }
+            endDrag()
         default: break
         }
     }
 
+    private func endDrag() {
+        armed = false
+        // If the wheel caught the drop it already acted; otherwise the drag ended off the wheel.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [weak self] in
+            guard let self, self.active != nil, !self.armed else { return }
+            self.wheel?.hide(); self.wheel = nil; self.active = nil
+        }
+    }
+
+    /// When ⌘ was let go during this drag, if it still is.
+    private var letGoOfCommand: Date?
+
     /// The wheel follows ⌘: shown while it is held during a drag, tucked away when it is released.
     private func updateWheel() {
         guard armed else { return }
+        // macOS doesn't always report the end of a drag. If the button is up, the drag is over,
+        // so a later ⌘ (like ⌘C) can't pop up a wheel for a file that is no longer being dragged.
+        guard NSEvent.pressedMouseButtons & 1 != 0 else { return endDrag() }
         if NSEvent.modifierFlags.contains(.command) {
+            letGoOfCommand = nil
             tryShowWheel()
             if active != nil { wheel?.hover(at: NSEvent.mouseLocation) }
         } else if active != nil {
+            // People often let go of ⌘ a split second before the mouse. Wait a moment before hiding,
+            // so that drop still lands on the wheel instead of falling through to the Desktop.
+            let since = letGoOfCommand ?? Date()
+            letGoOfCommand = since
+            guard Date().timeIntervalSince(since) > 0.15 else { return }
+            letGoOfCommand = nil
             active = nil
             wheel?.hide()
             wheel = nil
@@ -152,10 +172,25 @@ final class AppController: NSObject, NSApplicationDelegate, NSSharingServiceDele
             // wheel's centre button instead of sliding down from the top of the screen.
             let c = w.centerOnScreen, r = WheelGeometry.centerRadius
             airDropOrigin = CGRect(x: c.x - r, y: c.y - r, width: r * 2, height: r * 2)
-            airDrop = NSSharingService(named: .sendViaAirDrop)
-            airDrop?.delegate = self
-            airDrop?.perform(withItems: [file.url])
+            guard let service = NSSharingService(named: .sendViaAirDrop), service.canPerform(withItems: [file.url]) else {
+                // Usually AirDrop or Wi-Fi/Bluetooth is turned off: say so instead of doing nothing.
+                busy.append(w)
+                w.model.status = .failed("AirDrop is off")
+                NSSound.beep()
+                w.hide(after: 2.2)
+                DispatchQueue.main.asyncAfter(deadline: .now() + 2.7) { [weak self] in self?.busy.removeAll { $0 === w } }
+                return
+            }
+            airDrop = service
+            service.delegate = self
             w.hide()
+            // Open AirDrop only once the drag has fully finished. Opening it while macOS is still
+            // wrapping up the drop sometimes made the AirDrop window never appear. FileWheel also has to be
+            // the app in front for the window to show up and take clicks.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                NSApp.activate(ignoringOtherApps: true)
+                service.perform(withItems: [file.url])
+            }
         case .none:
             w.hide()
         }
@@ -163,6 +198,10 @@ final class AppController: NSObject, NSApplicationDelegate, NSSharingServiceDele
 
     nonisolated func sharingService(_ sharingService: NSSharingService, sourceFrameOnScreenForShareItem item: Any) -> NSRect {
         MainActor.assumeIsolated { airDropOrigin }
+    }
+
+    nonisolated func sharingService(_ sharingService: NSSharingService, didFailToShareItems items: [Any], error: Error) {
+        Log.write("AirDrop failed: \(error.localizedDescription)")
     }
 
     // MARK: menu bar + permission

@@ -47,6 +47,18 @@ final class MatrixTests: XCTestCase {
         }
     }
 
+    /// The same file converted twice at the same moment gets two copies, not one save failure.
+    func testSameConversionTwiceAtOnce() async throws {
+        let wav = try makeWAV()
+        let folder = dir!
+        async let a = Converter.convertOne(wav, to: .m4a, into: folder)
+        async let b = Converter.convertOne(wav, to: .m4a, into: folder)
+        let (first, second) = try await (a, b)
+        XCTAssertNotEqual(first.path, second.path)
+        XCTAssertTrue(try valid(first, as: .m4a))
+        XCTAssertTrue(try valid(second, as: .m4a))
+    }
+
     // MARK: running and checking
 
     private func runAll(_ sources: [URL]) async throws {
