@@ -4,13 +4,6 @@ import FileWheelCore
 
 MainActor.assumeIsolated {
     let args = CommandLine.arguments
-    // Developer helper: `FileWheel --make-iconset Assets/AppIcon.iconset` writes the app icon images.
-    if let i = args.firstIndex(of: "--make-iconset"), args.count > i + 1 {
-        try? Icons.writeIconset(to: URL(fileURLWithPath: args[i + 1]))
-        let menu = URL(fileURLWithPath: args[i + 1]).deletingLastPathComponent().appendingPathComponent("menubar-preview.png")
-        try? Icons.menuBarPreview(size: 180).representation(using: .png, properties: [:])?.write(to: menu)
-        exit(0)
-    }
     // Developer helper: `FileWheel --preview out.png` draws the wheel to a picture and quits.
     if let i = args.firstIndex(of: "--preview"), args.count > i + 1 {
         let model = WheelModel()

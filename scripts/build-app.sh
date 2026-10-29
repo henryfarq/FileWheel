@@ -14,7 +14,7 @@ swift build -c release
 APP=build/FileWheel.app
 rm -rf "$APP"; mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp .build/release/FileWheel "$APP/Contents/MacOS/FileWheel"
-cp Assets/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"   # remake with: FileWheel --make-iconset, then iconutil
+cp Assets/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"   # remake with: swift scripts/make-icon.swift Assets/AppIcon-source.png Assets/AppIcon.icns
 cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
